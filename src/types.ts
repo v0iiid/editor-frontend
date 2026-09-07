@@ -18,25 +18,18 @@ export interface MediaFileMetadata {
 
 export type TrackType = 'video' | 'audio';
 
-export interface TransformOptions {
-  x: number;
-  y: number;
-  scale: number;
-}
-
 export interface Clip {
   id: string;
   fileId: string;
   name: string;
   type: TrackType;
-  start: number;      // Timeline start in seconds
-  duration: number;   // Visual duration on timeline
-  trimIn: number;     // Crop start point in source file
-  trimOut: number;    // Crop end point in source file
-  volume?: number;    // 0.0 to 2.0
-  speed?: number;     // 0.25 to 4.0
+  start: number;
+  duration: number;
+  trimIn: number;
+  trimOut: number;
+  volume?: number;
+  speed?: number;
   filter?: 'none' | 'grayscale' | 'sepia' | 'invert' | 'bright' | 'contrast';
-  transform?: TransformOptions;
 }
 
 export interface Track {
@@ -52,36 +45,26 @@ export interface TextOverlay {
   text: string;
   start: number;
   end: number;
-  x: number;          // 0 to 100 percentage
-  y: number;          // 0 to 100 percentage
-  fontSize: number;   // In pixels
-  fontColor: string;  // Hex color #ffffff
-  backgroundColor?: string; // Hex color or transparent
+  x: number;
+  y: number;
+  fontSize: number;
+  fontColor: string;
+  backgroundColor?: string;
   fontFamily?: string;
-}
-
-export interface Transition {
-  id: string;
-  type: 'crossfade' | 'fadein' | 'fadeout' | 'wipeleft' | 'wiperight';
-  fromClipId: string;
-  toClipId: string;
-  duration: number;
-}
-
-export interface CanvasSettings {
-  width: number;
-  height: number;
-  fps: number;
 }
 
 export interface TimelineSchema {
   id?: string;
   name: string;
-  aspectRatio?: '16:9' | '9:16' | '1:1' | '4:3';
-  canvas: CanvasSettings;
+  aspectRatio?: string;
+  canvas: {
+    width: number;
+    height: number;
+    fps: number;
+  };
   tracks: Track[];
   textOverlays: TextOverlay[];
-  transitions: Transition[];
+  transitions: any[];
   transcript?: any;
   aiMetadata?: any;
 }

@@ -37,7 +37,18 @@ interface DragState {
   initialDuration: number;
   initialTrimIn: number;
   initialTrimOut: number;
+  sourceMaxDuration: number;
 }
+
+// Compact clips on track so they magnetically snap end-to-end without floating gaps
+const compactClipsSequence = (clips: Clip[]): Clip[] => {
+  let cursor = 0;
+  return clips.map((clip) => {
+    const updated = { ...clip, start: Math.round(cursor * 100) / 100 };
+    cursor += clip.duration;
+    return updated;
+  });
+};
 
 export const Timeline: React.FC<TimelineProps> = ({
   timeline,
@@ -52,7 +63,7 @@ export const Timeline: React.FC<TimelineProps> = ({
   totalDuration,
   onAddMediaToTimelineAtTime
 }) => {
-  const [zoomScale, setZoomScale] = useState<number>(30); // 30px per sec
+  const [zoomScale, setZoomScale] = useState<number>(30);
   const timelineRef = useRef<HTMLDivElement>(null);
   const [isScrubbing, setIsScrubbing] = useState<boolean>(false);
   const [dragState, setDragState] = useState<DragState | null>(null);
@@ -60,7 +71,6 @@ export const Timeline: React.FC<TimelineProps> = ({
   const secondsToPx = (sec: number) => sec * zoomScale;
   const pxToSeconds = (px: number) => Math.max(0, px / zoomScale);
 
-  // Global mouse event listeners for clip dragging & trimming
   useEffect(() => {
     if (!dragState) return;
 
@@ -71,35 +81,93 @@ export const Timeline: React.FC<TimelineProps> = ({
       const newTracks = timeline.tracks.map((track) => {
         if (track.id !== dragState.trackId) return track;
 
-        return {
-          ...track,
-          clips: track.clips.map((clip) => {
-            if (clip.id !== dragState.clipId) return clip;
+        if (dragState.mode === 'move') {
+          const currentClipIndex = track.clips.findIndex((c) => c.id === dragState.clipId);
+          if (currentClipIndex === -1) return track;
 
-            if (dragState.mode === 'move') {
-              const newStart = Math.max(0, Math.round((dragState.initialStart + deltaSec) * 10) / 10);
-              return { ...clip, start: newStart };
-            } else if (dragState.mode === 'trim-start') {
-              const maxDelta = dragState.initialDuration - 0.2;
-              const clampedDelta = Math.min(maxDelta, deltaSec);
-              const newStart = Math.max(0, dragState.initialStart + clampedDelta);
-              const newDuration = Math.max(0.2, dragState.initialDuration - clampedDelta);
-              const newTrimIn = Math.max(0, dragState.initialTrimIn + clampedDelta);
-              return { ...clip, start: newStart, duration: newDuration, trimIn: newTrimIn };
-            } else if (dragState.mode === 'trim-end') {
-              const newDuration = Math.max(0.2, Math.round((dragState.initialDuration + deltaSec) * 10) / 10);
-              const newTrimOut = clip.trimIn + newDuration;
-              return { ...clip, duration: newDuration, trimOut: newTrimOut };
-            }
-            return clip;
-          })
-        };
+          const currentClip = track.clips[currentClipIndex];
+          const proposedCenter = (dragState.initialStart + deltaSec) + currentClip.duration / 2;
+
+          // Reorder sequence based on drag position
+          const remainingClips = track.clips.filter((c) => c.id !== dragState.clipId);
+          let targetIndex = 0;
+
+          while (
+            targetIndex < remainingClips.length &&
+            proposedCenter > remainingClips[targetIndex].start + remainingClips[targetIndex].duration / 2
+          ) {
+            targetIndex++;
+          }
+
+          const reordered = [...remainingClips];
+          reordered.splice(targetIndex, 0, currentClip);
+
+          // Magnetically compact clips end-to-end
+          const compacted = compactClipsSequence(reordered);
+          return { ...track, clips: compacted };
+
+        } else if (dragState.mode === 'trim-start') {
+          return {
+            ...track,
+            clips: track.clips.map((clip) => {
+              if (clip.id !== dragState.clipId) return clip;
+
+              const maxTrimDeltaLeft = dragState.initialTrimIn;
+              const minAllowedStart = Math.max(0, dragState.initialStart - maxTrimDeltaLeft);
+              const maxAllowedStart = dragState.initialStart + dragState.initialDuration - 0.2;
+
+              const proposedStart = dragState.initialStart + deltaSec;
+              const clampedStart = Math.max(minAllowedStart, Math.min(maxAllowedStart, proposedStart));
+              const trimDelta = clampedStart - dragState.initialStart;
+
+              const newDuration = dragState.initialDuration - trimDelta;
+              const newTrimIn = Math.max(0, dragState.initialTrimIn + trimDelta);
+
+              return {
+                ...clip,
+                start: Math.round(clampedStart * 100) / 100,
+                duration: Math.round(newDuration * 100) / 100,
+                trimIn: Math.round(newTrimIn * 100) / 100
+              };
+            })
+          };
+
+        } else if (dragState.mode === 'trim-end') {
+          return {
+            ...track,
+            clips: track.clips.map((clip) => {
+              if (clip.id !== dragState.clipId) return clip;
+
+              const maxPossibleDuration = Math.max(0.2, dragState.sourceMaxDuration - (clip.trimIn || 0));
+              const proposedDuration = dragState.initialDuration + deltaSec;
+              const clampedDuration = Math.max(0.2, Math.min(maxPossibleDuration, proposedDuration));
+              const newTrimOut = (clip.trimIn || 0) + clampedDuration;
+
+              return {
+                ...clip,
+                duration: Math.round(clampedDuration * 100) / 100,
+                trimOut: Math.round(newTrimOut * 100) / 100
+              };
+            })
+          };
+        }
+        return track;
       });
 
       onUpdateTimeline({ ...timeline, tracks: newTracks });
     };
 
     const handleMouseUp = () => {
+      if (dragState && dragState.mode === 'move') {
+        // Compact track clips on release
+        const finalizedTracks = timeline.tracks.map((t) => {
+          if (t.id === dragState.trackId) {
+            return { ...t, clips: compactClipsSequence(t.clips) };
+          }
+          return t;
+        });
+        onUpdateTimeline({ ...timeline, tracks: finalizedTracks });
+      }
       setDragState(null);
     };
 
@@ -111,7 +179,6 @@ export const Timeline: React.FC<TimelineProps> = ({
     };
   }, [dragState, timeline, zoomScale, onUpdateTimeline]);
 
-  // Scrub playhead timecode
   const handleTimelineScrub = (e: React.MouseEvent<HTMLDivElement>) => {
     if (!timelineRef.current || dragState) return;
     const rect = timelineRef.current.getBoundingClientRect();
@@ -127,16 +194,11 @@ export const Timeline: React.FC<TimelineProps> = ({
   };
 
   const handleMouseMoveScrub = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (isScrubbing && !dragState) {
-      handleTimelineScrub(e);
-    }
+    if (isScrubbing && !dragState) handleTimelineScrub(e);
   };
 
-  const handleMouseUpScrub = () => {
-    setIsScrubbing(false);
-  };
+  const handleMouseUpScrub = () => setIsScrubbing(false);
 
-  // Start clip drag or trim
   const handleClipMouseDown = (
     e: React.MouseEvent,
     clip: Clip,
@@ -147,6 +209,9 @@ export const Timeline: React.FC<TimelineProps> = ({
     onSelectClip(clip.id);
     onSelectTextOverlay(null);
 
+    const sourceFile = mediaFiles.find((m) => m.id === clip.fileId);
+    const sourceMaxDuration = sourceFile ? sourceFile.duration : (clip.trimOut || 300);
+
     setDragState({
       mode,
       clipId: clip.id,
@@ -155,11 +220,11 @@ export const Timeline: React.FC<TimelineProps> = ({
       initialStart: clip.start,
       initialDuration: clip.duration,
       initialTrimIn: clip.trimIn || 0,
-      initialTrimOut: clip.trimOut || clip.duration
+      initialTrimOut: clip.trimOut || clip.duration,
+      sourceMaxDuration
     });
   };
 
-  // Drop media file from Media Bin onto timeline track
   const handleTrackDrop = (e: React.DragEvent, trackType: 'video' | 'audio') => {
     e.preventDefault();
     const rawData = e.dataTransfer.getData('application/json');
@@ -179,11 +244,9 @@ export const Timeline: React.FC<TimelineProps> = ({
     }
   };
 
-  // Smart Split clip at current playhead position
   const handleSplitClipAtPlayhead = () => {
     let targetClipId = selectedClipId;
 
-    // If no clip is explicitly selected, find the clip under current playhead
     if (!targetClipId) {
       for (const track of timeline.tracks) {
         const clipUnderPlayhead = track.clips.find(
@@ -206,9 +269,7 @@ export const Timeline: React.FC<TimelineProps> = ({
       const targetClip = track.clips[clipIndex];
       const splitPoint = currentTime - targetClip.start;
 
-      if (splitPoint <= 0.1 || splitPoint >= targetClip.duration - 0.1) {
-        return track;
-      }
+      if (splitPoint <= 0.1 || splitPoint >= targetClip.duration - 0.1) return track;
 
       const leftDuration = Math.round(splitPoint * 100) / 100;
       const rightDuration = Math.round((targetClip.duration - leftDuration) * 100) / 100;
@@ -231,7 +292,9 @@ export const Timeline: React.FC<TimelineProps> = ({
       const updatedClips = [...track.clips];
       updatedClips.splice(clipIndex, 1, leftClip, rightClip);
       splitOccurred = true;
-      return { ...track, clips: updatedClips };
+
+      // Magnetically compact sequence
+      return { ...track, clips: compactClipsSequence(updatedClips) };
     });
 
     if (splitOccurred) {
@@ -239,12 +302,11 @@ export const Timeline: React.FC<TimelineProps> = ({
     }
   };
 
-  // Delete selected clip or text overlay
   const handleDeleteSelected = () => {
     if (selectedClipId) {
       const newTracks = timeline.tracks.map((t) => ({
         ...t,
-        clips: t.clips.filter((c) => c.id !== selectedClipId)
+        clips: compactClipsSequence(t.clips.filter((c) => c.id !== selectedClipId))
       }));
       onUpdateTimeline({ ...timeline, tracks: newTracks });
       onSelectClip(null);
@@ -291,7 +353,7 @@ export const Timeline: React.FC<TimelineProps> = ({
 
   return (
     <div className="h-72 bg-dark-800 border-t border-dark-700 flex flex-col select-none">
-      {/* Toolbar Controls */}
+      {/* Toolbar */}
       <div className="h-10 bg-dark-800 border-b border-dark-700 px-4 flex items-center justify-between z-10">
         <div className="flex items-center space-x-2">
           <button
@@ -324,7 +386,7 @@ export const Timeline: React.FC<TimelineProps> = ({
           </button>
         </div>
 
-        {/* Zoom Controls */}
+        {/* Zoom */}
         <div className="flex items-center space-x-3">
           <span className="text-[11px] text-slate-400">Zoom Timeline</span>
           <button
@@ -350,9 +412,9 @@ export const Timeline: React.FC<TimelineProps> = ({
         </div>
       </div>
 
-      {/* Main Timeline Workspace */}
+      {/* Main Workspace */}
       <div className="flex-1 flex overflow-hidden">
-        {/* Track Headers Panel (Left) */}
+        {/* Track Headers */}
         <div className="w-48 bg-dark-800 border-r border-dark-700 flex-shrink-0 flex flex-col pt-7 z-10">
           <div className="h-10 px-3 flex items-center justify-between border-b border-dark-700/60 bg-dark-900/40">
             <span className="text-xs font-semibold text-purple-300 flex items-center gap-1.5">
@@ -378,7 +440,6 @@ export const Timeline: React.FC<TimelineProps> = ({
 
               <button
                 onClick={() => handleToggleTrackMute(track.id)}
-                title={track.muted ? 'Unmute Track' : 'Mute Track'}
                 className={`p-1 rounded ${
                   track.muted ? 'text-red-400 bg-red-950/40' : 'text-slate-400 hover:text-slate-200'
                 }`}
@@ -389,7 +450,7 @@ export const Timeline: React.FC<TimelineProps> = ({
           ))}
         </div>
 
-        {/* Scrollable Tracks Canvas (Right) */}
+        {/* Tracks Canvas */}
         <div
           ref={timelineRef}
           onMouseDown={handleMouseDownScrub}
@@ -401,7 +462,7 @@ export const Timeline: React.FC<TimelineProps> = ({
             className="relative min-h-full"
             style={{ width: `${secondsToPx(displayLength)}px` }}
           >
-            {/* Time Ruler (Seconds Ticks) */}
+            {/* Time Ruler */}
             <div className="h-7 border-b border-dark-700 bg-dark-900/80 flex items-end relative select-none">
               {rulerTicks.map((sec) => (
                 <div
@@ -419,7 +480,7 @@ export const Timeline: React.FC<TimelineProps> = ({
               ))}
             </div>
 
-            {/* Playhead Cursor (Red Vertical Line) */}
+            {/* Playhead */}
             <div
               className="absolute top-0 bottom-0 w-0.5 bg-red-500 z-30 pointer-events-none"
               style={{ left: `${secondsToPx(currentTime)}px` }}
@@ -427,7 +488,7 @@ export const Timeline: React.FC<TimelineProps> = ({
               <div className="w-3 h-3 bg-red-500 transform -translate-x-[5px] rotate-45 rounded-sm shadow-md" />
             </div>
 
-            {/* Text Overlays Row */}
+            {/* Text Overlays */}
             <div className="h-10 border-b border-dark-700/40 relative bg-purple-950/10">
               {timeline.textOverlays.map((overlay) => {
                 const isSelected = overlay.id === selectedTextOverlayId;
@@ -455,7 +516,7 @@ export const Timeline: React.FC<TimelineProps> = ({
               })}
             </div>
 
-            {/* Media Tracks & Interactive Clips Rows */}
+            {/* Track Clips */}
             {timeline.tracks.map((track) => (
               <div
                 key={track.id}
@@ -465,6 +526,7 @@ export const Timeline: React.FC<TimelineProps> = ({
               >
                 {track.clips.map((clip) => {
                   const isSelected = clip.id === selectedClipId;
+                  const isDraggingThisClip = dragState?.clipId === clip.id;
                   const width = secondsToPx(clip.duration);
                   const left = secondsToPx(clip.start);
                   const isVideo = clip.type === 'video';
@@ -473,8 +535,10 @@ export const Timeline: React.FC<TimelineProps> = ({
                     <div
                       key={clip.id}
                       onMouseDown={(e) => handleClipMouseDown(e, clip, track.id, 'move')}
-                      className={`clip-box absolute top-1 bottom-1 rounded-lg border flex flex-col justify-between p-1.5 cursor-grab active:cursor-grabbing transition-shadow shadow-md group ${
-                        isSelected
+                      className={`clip-box absolute top-1 bottom-1 rounded-lg border flex flex-col justify-between p-1.5 cursor-grab active:cursor-grabbing transition-all ${
+                        isDraggingThisClip
+                          ? 'scale-95 border-indigo-300 ring-4 ring-indigo-400 shadow-2xl shadow-indigo-500/50 z-40 opacity-90 backdrop-blur-sm animate-pulse bg-indigo-500 text-white'
+                          : isSelected
                           ? 'border-indigo-400 ring-2 ring-indigo-500/50 shadow-indigo-500/20 z-20 ' +
                             (isVideo ? 'bg-indigo-600 text-white' : 'bg-emerald-600 text-white')
                           : isVideo
@@ -487,12 +551,12 @@ export const Timeline: React.FC<TimelineProps> = ({
                       <div
                         onMouseDown={(e) => handleClipMouseDown(e, clip, track.id, 'trim-start')}
                         title="Drag to trim start"
-                        className="absolute left-0 top-0 bottom-0 w-2.5 bg-white/20 hover:bg-white/50 cursor-ew-resize rounded-l-md transition-colors flex items-center justify-center"
+                        className="absolute left-0 top-0 bottom-0 w-2.5 bg-white/20 hover:bg-white/50 cursor-ew-resize rounded-l-md transition-colors flex items-center justify-center z-10"
                       >
                         <div className="w-0.5 h-3 bg-white/60 rounded-full" />
                       </div>
 
-                      {/* Clip Body Content */}
+                      {/* Clip Label */}
                       <div className="flex items-center justify-between text-xs font-medium truncate px-1.5">
                         <span className="truncate flex items-center gap-1">
                           <GripHorizontal className="w-3 h-3 opacity-60 flex-shrink-0" />
@@ -518,7 +582,7 @@ export const Timeline: React.FC<TimelineProps> = ({
                       <div
                         onMouseDown={(e) => handleClipMouseDown(e, clip, track.id, 'trim-end')}
                         title="Drag to trim end"
-                        className="absolute right-0 top-0 bottom-0 w-2.5 bg-white/20 hover:bg-white/50 cursor-ew-resize rounded-r-md transition-colors flex items-center justify-center"
+                        className="absolute right-0 top-0 bottom-0 w-2.5 bg-white/20 hover:bg-white/50 cursor-ew-resize rounded-r-md transition-colors flex items-center justify-center z-10"
                       >
                         <div className="w-0.5 h-3 bg-white/60 rounded-full" />
                       </div>

@@ -187,48 +187,12 @@ export const App: React.FC = () => {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [selectedClipId, selectedTextOverlayId, undo, redo, setTimeline]);
 
-  // Add Uploaded Media to Timeline Track
+  // Add Uploaded Media to Timeline Track with Overlap Prevention
   const handleAddMediaToTimeline = (media: MediaFileMetadata) => {
-    const isAudio = media.mimeType.startsWith('audio/');
-    const targetType = isAudio ? 'audio' : 'video';
-
-    const newClip: Clip = {
-      id: `clip_${Date.now()}`,
-      fileId: media.id,
-      name: media.originalName,
-      type: targetType,
-      start: currentTime,
-      duration: media.duration || 5,
-      trimIn: 0,
-      trimOut: media.duration || 5,
-      volume: 1.0,
-      speed: 1.0,
-      filter: 'none'
-    };
-
-    setTimeline((prev) => {
-      const tracks = [...prev.tracks];
-      const targetTrack = tracks.find((t) => t.type === targetType);
-
-      if (targetTrack) {
-        targetTrack.clips.push(newClip);
-      } else {
-        tracks.push({
-          id: `track_${targetType}_${Date.now()}`,
-          type: targetType,
-          name: `${targetType === 'video' ? 'Video' : 'Audio'} Track ${tracks.length + 1}`,
-          muted: false,
-          clips: [newClip]
-        });
-      }
-
-      return { ...prev, tracks };
-    });
-
-    setSelectedClipId(newClip.id);
+    handleAddMediaToTimelineAtTime(media, currentTime, media.mimeType.startsWith('audio/') ? 'audio' : 'video');
   };
 
-  // Drag & Drop Media onto Timeline at specific timestamp
+  // Drag & Drop Media onto Timeline at specific timestamp with Overlap Prevention
   const handleAddMediaToTimelineAtTime = (
     media: MediaFileMetadata,
     targetTime: number,
@@ -236,41 +200,51 @@ export const App: React.FC = () => {
   ) => {
     const isAudio = media.mimeType.startsWith('audio/');
     const actualType = isAudio ? 'audio' : 'video';
-
-    const newClip: Clip = {
-      id: `clip_${Date.now()}`,
-      fileId: media.id,
-      name: media.originalName,
-      type: actualType,
-      start: targetTime,
-      duration: media.duration || 5,
-      trimIn: 0,
-      trimOut: media.duration || 5,
-      volume: 1.0,
-      speed: 1.0,
-      filter: 'none'
-    };
+    const clipDuration = media.duration || 5;
 
     setTimeline((prev) => {
       const tracks = [...prev.tracks];
-      const targetTrack = tracks.find((t) => t.type === actualType);
+      let targetTrack = tracks.find((t) => t.type === actualType);
 
-      if (targetTrack) {
-        targetTrack.clips.push(newClip);
-      } else {
-        tracks.push({
+      if (!targetTrack) {
+        targetTrack = {
           id: `track_${actualType}_${Date.now()}`,
           type: actualType,
           name: `${actualType === 'video' ? 'Video' : 'Audio'} Track ${tracks.length + 1}`,
           muted: false,
-          clips: [newClip]
-        });
+          clips: []
+        };
+        tracks.push(targetTrack);
       }
 
+      // Calculate non-overlapping start time
+      let startTime = Math.max(0, targetTime);
+      const sortedClips = [...targetTrack.clips].sort((a, b) => a.start - b.start);
+
+      for (const existing of sortedClips) {
+        if (startTime < existing.start + existing.duration && startTime + clipDuration > existing.start) {
+          startTime = existing.start + existing.duration;
+        }
+      }
+
+      const newClip: Clip = {
+        id: `clip_${Date.now()}`,
+        fileId: media.id,
+        name: media.originalName,
+        type: actualType,
+        start: Math.round(startTime * 100) / 100,
+        duration: clipDuration,
+        trimIn: 0,
+        trimOut: clipDuration,
+        volume: 1.0,
+        speed: 1.0,
+        filter: 'none'
+      };
+
+      targetTrack.clips.push(newClip);
+      setSelectedClipId(newClip.id);
       return { ...prev, tracks };
     });
-
-    setSelectedClipId(newClip.id);
   };
 
   // Manual Save Project to Backend Database
